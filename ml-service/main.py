@@ -12,9 +12,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 @app.get("/")
 def home():
     return {"message": "ML service is running"}
+
 
 @app.post("/predict")
 def predict(symbol: str, period: str = "6mo"):
@@ -73,12 +75,13 @@ def predict(symbol: str, period: str = "6mo"):
         print("Prediction error:", str(e))
         return {"error": "Prediction failed"}
 
+
 @app.get("/history")
 def history(symbol: str, period: str = "6mo", interval: str = "1d"):
     try:
-        # Intraday handling
-        if interval in ["1m", "5m", "10m", "15m"]:
-            period = "1d"   # force today’s data
+        # intraday intervals → force only today’s data
+        if interval in ["1m", "5m", "15m"]:
+            period = "1d"
 
         data = yf.download(symbol, period=period, interval=interval)
 
@@ -109,36 +112,54 @@ def history(symbol: str, period: str = "6mo", interval: str = "1d"):
 @app.get("/intraday")
 def intraday(symbol: str):
     try:
-        # Fetch 5 days of 5-minute data
-        data = yf.download(symbol, period="5d", interval="5m")
+        data = yf.download(symbol, period="1d", interval="5m")
 
         if data is None or data.empty:
             return {"error": "No intraday data available"}
 
-        close = data["Close"]
+        df = data.dropna()
 
-        if hasattr(close, "columns"):
-            close = close[symbol]
-
-        close = close.dropna()
-
-        if len(close) < 50:
+        if len(df) < 20:
             return {"error": "Not enough intraday data"}
 
-        prices = close.values
+        close = df["Close"]
+        high = df["High"]
+        low = df["Low"]
+        volume = df["Volume"]
 
-        # --- EMA ---
-        ema_period = 20
-        ema = np.convolve(
-            prices,
-            np.ones(ema_period) / ema_period,
-            mode="valid"
-        )[-1]
+# Handle multi-column case (like AAPL in certain responses)
+        if hasattr(close, "columns"):
+            close = close.iloc[:, 0]
+            high = high.iloc[:, 0]
+            low = low.iloc[:, 0]
+            volume = volume.iloc[:, 0]
 
-        current_price = prices[-1]
+        close = close.values
+        high = high.values
+        low = low.values
+        volume = volume.values
 
-        # --- RSI ---
-        delta = np.diff(prices)
+
+        current_price = close[-1]
+
+        # -----------------------
+        # EMA 20 & EMA 50
+        # -----------------------
+        def ema(prices, period):
+            alpha = 2 / (period + 1)
+            ema_val = prices[0]
+            for price in prices[1:]:
+                ema_val = alpha * price + (1 - alpha) * ema_val
+            return ema_val
+
+
+        ema20 = ema(close, min(20, len(close)))
+        ema50 = ema(close, min(50, len(close)))
+
+        # -----------------------
+        # RSI (14)
+        # -----------------------
+        delta = np.diff(close)
         gain = np.maximum(delta, 0)
         loss = np.abs(np.minimum(delta, 0))
 
@@ -148,37 +169,93 @@ def intraday(symbol: str):
         rs = avg_gain / avg_loss
         rsi = 100 - (100 / (1 + rs))
 
-        # --- Signal logic ---
+        # -----------------------
+        # MACD
+        # -----------------------
+        def ema_series(prices, period):
+            alpha = 2 / (period + 1)
+            ema_vals = [prices[0]]
+            for price in prices[1:]:
+                ema_vals.append(alpha * price + (1 - alpha) * ema_vals[-1])
+            return np.array(ema_vals)
+
+        ema12 = ema_series(close, 12)
+        ema26 = ema_series(close, 26)
+        macd_line = ema12 - ema26
+        signal_line = ema_series(macd_line, 9)
+
+        macd = macd_line[-1]
+        macd_signal = signal_line[-1]
+
+        # -----------------------
+        # VWAP
+        # -----------------------
+        typical_price = (high + low + close) / 3
+        vwap = np.sum(typical_price * volume) / np.sum(volume)
+
+        # -----------------------
+        # ATR (14)
+        # -----------------------
+        tr = np.maximum(
+            high[1:] - low[1:],
+            np.maximum(
+                abs(high[1:] - close[:-1]),
+                abs(low[1:] - close[:-1])
+            )
+        )
+        atr = np.mean(tr[-14:])
+
+        # -----------------------
+        # Signal scoring
+        # -----------------------
         score = 0
+        total = 5
 
-        if current_price > ema:
-            score += 1
-        else:
-            score -= 1
+        # EMA trend
+        score += 1 if ema20 > ema50 else -1
 
+        # RSI
         if rsi < 35:
             score += 1
         elif rsi > 65:
             score -= 1
 
-        if score > 0:
-            signal = "BUY"
+        # MACD
+        score += 1 if macd > macd_signal else -1
+
+        # VWAP
+        score += 1 if current_price > vwap else -1
+
+        # Price vs EMA20
+        score += 1 if current_price > ema20 else -1
+
+        # -----------------------
+        # Final signal
+        # -----------------------
+        signal = "BUY" if score > 0 else "SELL"
+
+        confidence = int(50 + (abs(score) / total) * 50)
+        confidence = min(95, max(35, confidence))
+
+        # -----------------------
+        # ATR-based targets
+        # -----------------------
+        if signal == "BUY":
+            target = current_price + atr * 1.5
+            stop = current_price - atr
         else:
-            signal = "SELL"
-
-        confidence = min(90, 50 + abs(score) * 20)
-
-        day_high = float(np.max(prices[-78:]))  # last trading day approx
-        day_low = float(np.min(prices[-78:]))
+            target = current_price - atr * 1.5
+            stop = current_price + atr
 
         return {
             "symbol": symbol,
             "price": round(float(current_price), 2),
-            "day_high": round(day_high, 2),
-            "day_low": round(day_low, 2),
             "signal": signal,
             "confidence": confidence,
-            "rsi": round(float(rsi), 2)
+            "target": round(float(target), 2),
+            "stop": round(float(stop), 2),
+            "rsi": round(float(rsi), 2),
+            "atr": round(float(atr), 2)
         }
 
     except Exception as e:
