@@ -4,3 +4,12 @@ body {
   color: #e5e7eb;
   font-family: system-ui, sans-serif;
 }
+/* Hide scrollbar for Chrome, Safari and Edge */
+::-webkit-scrollbar {
+  display: none;
+}
+
+/* Hide scrollbar for Firefox */
+body {
+  scrollbar-width: none;
+}

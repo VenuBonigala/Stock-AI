@@ -35,20 +35,24 @@ public class StockController {
     }
 
     @GetMapping("/predict/{symbol}")
-public Prediction predict(
-        @PathVariable String symbol,
-        @RequestParam(defaultValue = "6mo") String period) {
-    return stockService.getPrediction(symbol, period);
-}
-
+    public Prediction predict(
+            @PathVariable String symbol,
+            @RequestParam(defaultValue = "6mo") String period) {
+        return stockService.getPrediction(symbol, period);
+    }
 
     @GetMapping("/history/{symbol}")
-public List<Map<String, Object>> getHistory(
-        @PathVariable String symbol,
-        @RequestParam(defaultValue = "6mo") String period) {
-    return stockService.getStockHistory(symbol, period);
-}
+    public List<Map<String, Object>> getHistory(
+            @PathVariable String symbol,
+            @RequestParam(defaultValue = "6mo") String period,
+            @RequestParam(defaultValue = "1d") String interval) {
+        return stockService.getStockHistory(symbol, period, interval);
+    }
 
-
+    @GetMapping("/intraday/{symbol}")
+    public Map<String, Object> getIntraday(
+            @PathVariable String symbol) {
+        return stockService.getIntraday(symbol);
+    }
 
 }

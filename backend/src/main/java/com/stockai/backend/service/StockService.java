@@ -55,65 +55,70 @@ public class StockService {
 
         return stockRepository.save(stock);
     }
+
     public Prediction getPrediction(String symbol, String period) {
-    String normalized = normalizeSymbol(symbol);
-    String url = "http://127.0.0.1:8000/predict?symbol=" + normalized + "&period=" + period;
-    return restTemplate.postForObject(url, null, Prediction.class);
-}
-
-
-
-    public List<Map<String, Object>> getStockHistory(String symbol, String period) {
-    String normalized = normalizeSymbol(symbol);
-    String url = "http://127.0.0.1:8000/history?symbol=" + normalized + "&period=" + period;
-
-    try {
-        List<Map<String, Object>> response =
-                restTemplate.getForObject(url, List.class);
-
-        return response != null ? response : new ArrayList<>();
-    } catch (Exception e) {
-        System.out.println("History fetch failed: " + e.getMessage());
-        return new ArrayList<>();
-    }
-}
-
-
-
-
-private String normalizeSymbol(String symbol) {
-    symbol = symbol.toUpperCase();
-
-    // Index mappings
-    if (symbol.equals("NIFTY50") || symbol.equals("NIFTY")) {
-        return "^NSEI";
-    }
-    if (symbol.equals("SENSEX")) {
-        return "^BSESN";
+        String normalized = normalizeSymbol(symbol);
+        String url = "http://127.0.0.1:8000/predict?symbol=" + normalized + "&period=" + period;
+        return restTemplate.postForObject(url, null, Prediction.class);
     }
 
-    // If already contains special characters, return as is
-    if (symbol.contains("^") || symbol.contains("-") || symbol.contains(".")) {
-        return symbol;
+    public List<Map<String, Object>> getStockHistory(String symbol, String period, String interval) {
+        String normalized = normalizeSymbol(symbol);
+        String url = "http://127.0.0.1:8000/history?symbol="
+                + normalized + "&period=" + period + "&interval=" + interval;
+
+        try {
+            List<Map<String, Object>> response
+                    = restTemplate.getForObject(url, List.class);
+
+            return response != null ? response : new ArrayList<>();
+        } catch (Exception e) {
+            System.out.println("History fetch failed: " + e.getMessage());
+            return new ArrayList<>();
+        }
     }
 
-    // Known US stocks (can expand later)
-    Set<String> usStocks = Set.of(
-        "AAPL", "TSLA", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "NFLX", "AMD"
-    );
+    private String normalizeSymbol(String symbol) {
+        symbol = symbol.toUpperCase();
 
-    if (usStocks.contains(symbol)) {
-        return symbol;
+        // Index mappings
+        if (symbol.equals("NIFTY50") || symbol.equals("NIFTY")) {
+            return "^NSEI";
+        }
+        if (symbol.equals("SENSEX")) {
+            return "^BSESN";
+        }
+
+        // If already contains special characters, return as is
+        if (symbol.contains("^") || symbol.contains("-") || symbol.contains(".")) {
+            return symbol;
+        }
+
+        // Known US stocks (can expand later)
+        Set<String> usStocks = Set.of(
+                "AAPL", "TSLA", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "NFLX", "AMD"
+        );
+
+        if (usStocks.contains(symbol)) {
+            return symbol;
+        }
+
+        // Default: assume Indian stock
+        return symbol + ".NS";
     }
 
-    // Default: assume Indian stock
-    return symbol + ".NS";
-}
+    public Map<String, Object> getIntraday(String symbol) {
+        String normalized = normalizeSymbol(symbol);
+        String url = "http://127.0.0.1:8000/intraday?symbol=" + normalized;
 
-
-
-
-
-
+        try {
+            Map<String, Object> response
+                    = restTemplate.getForObject(url, Map.class);
+            return response;
+        } catch (Exception e) {
+            System.out.println("Intraday fetch failed: " + e.getMessage());
+            return new HashMap<>();
+        }
+    }
 
 }
