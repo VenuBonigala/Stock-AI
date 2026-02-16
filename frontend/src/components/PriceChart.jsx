@@ -5,9 +5,17 @@ import {
   LinearScale,
   PointElement,
   Tooltip,
-  Legend
+  Legend,
+  TimeScale,
 } from "chart.js";
-import { Line } from "react-chartjs-2";
+
+import { Line, Chart } from "react-chartjs-2";
+import {
+  CandlestickController,
+  CandlestickElement,
+} from "chartjs-chart-financial";
+
+import "chartjs-adapter-date-fns";
 
 ChartJS.register(
   LineElement,
@@ -15,10 +23,13 @@ ChartJS.register(
   LinearScale,
   PointElement,
   Tooltip,
-  Legend
+  Legend,
+  TimeScale,
+  CandlestickController,
+  CandlestickElement,
 );
 
-function PriceChart({ data }) {
+function PriceChart({ data, type = "line" }) {
   if (!Array.isArray(data) || data.length === 0) {
     return (
       <div className="bg-slate-900 p-6 rounded-xl shadow-lg border border-slate-800">
@@ -26,24 +37,6 @@ function PriceChart({ data }) {
       </div>
     );
   }
-
-  const labels = data.map((item) => item.date);
-  const prices = data.map((item) => Number(item.price));
-
-  const chartData = {
-    labels: labels,
-    datasets: [
-      {
-        label: "Price",
-        data: prices,
-        borderColor: "#2563eb",
-        backgroundColor: "rgba(37,99,235,0.1)",
-        tension: 0.3,
-        fill: true,
-        pointRadius: 0,
-      },
-    ],
-  };
 
   const options = {
     responsive: true,
@@ -57,6 +50,7 @@ function PriceChart({ data }) {
     },
     scales: {
       x: {
+        type: "linear",
         ticks: {
           color: "#94a3b8",
         },
@@ -75,11 +69,56 @@ function PriceChart({ data }) {
     },
   };
 
+
+  // LINE CHART (existing behavior)
+  if (type === "line") {
+    const labels = data.map((item) => item.date);
+    const prices = data.map((item) => Number(item.price));
+
+    const chartData = {
+      labels,
+      datasets: [
+        {
+          label: "Price",
+          data: prices,
+          borderColor: "#2563eb",
+          backgroundColor: "rgba(37,99,235,0.1)",
+          tension: 0.3,
+          fill: true,
+          pointRadius: 0,
+        },
+      ],
+    };
+
+    return (
+      <div className="bg-slate-900 p-6 rounded-xl shadow-lg border border-slate-800 h-[400px]">
+        <Line data={chartData} options={options} />
+      </div>
+    );
+  }
+
+  // CANDLESTICK CHART
+  const candleData = {
+    datasets: [
+      {
+        label: "Candlestick",
+        data: data.map((d, i) => ({
+          x: i,
+          o: d.open,
+          h: d.high,
+          l: d.low,
+          c: d.close,
+        })),
+      },
+    ],
+  };
+
   return (
     <div className="bg-slate-900 p-6 rounded-xl shadow-lg border border-slate-800 h-[400px]">
-      <Line data={chartData} options={options} />
+      <Chart type="candlestick" data={candleData} options={options} />
     </div>
   );
+
 }
 
 export default PriceChart;

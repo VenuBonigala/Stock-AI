@@ -79,7 +79,7 @@ public class StockService {
     }
 
     private String normalizeSymbol(String symbol) {
-        symbol = symbol.toUpperCase();
+        symbol = symbol.toUpperCase().trim();
 
         // Index mappings
         if (symbol.equals("NIFTY50") || symbol.equals("NIFTY")) {
@@ -89,22 +89,8 @@ public class StockService {
             return "^BSESN";
         }
 
-        // If already contains special characters, return as is
-        if (symbol.contains("^") || symbol.contains("-") || symbol.contains(".")) {
-            return symbol;
-        }
-
-        // Known US stocks (can expand later)
-        Set<String> usStocks = Set.of(
-                "AAPL", "TSLA", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "NFLX", "AMD"
-        );
-
-        if (usStocks.contains(symbol)) {
-            return symbol;
-        }
-
-        // Default: assume Indian stock
-        return symbol + ".NS";
+        // Otherwise, use symbol as-is
+        return symbol;
     }
 
     public Map<String, Object> getIntraday(String symbol) {

@@ -1,3 +1,5 @@
+import joblib
+import pandas as pd
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi import FastAPI
 import yfinance as yf
@@ -5,6 +7,7 @@ import numpy as np
 from sklearn.linear_model import LinearRegression
 
 app = FastAPI()
+model = joblib.load("models/intraday_model.pkl")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -79,7 +82,7 @@ def predict(symbol: str, period: str = "6mo"):
 @app.get("/history")
 def history(symbol: str, period: str = "6mo", interval: str = "1d"):
     try:
-        # intraday intervals → force only today’s data
+        # intraday intervals → use 5 days for stability
         if interval in ["1m", "5m", "15m"]:
             period = "1d"
 
@@ -88,18 +91,21 @@ def history(symbol: str, period: str = "6mo", interval: str = "1d"):
         if data is None or data.empty:
             return []
 
-        closes = data["Close"]
+        # Handle multi-index
+        if isinstance(data.columns, pd.MultiIndex):
+            data.columns = data.columns.get_level_values(0)
 
-        if hasattr(closes, "columns"):
-            closes = closes[symbol]
-
-        closes = closes.dropna()
+        data = data.dropna()
 
         result = []
-        for i, price in enumerate(closes):
+        for i, row in enumerate(data.itertuples()):
             result.append({
                 "date": i + 1,
-                "price": float(price)
+                "price": float(row.Close),
+                "open": float(row.Open),
+                "high": float(row.High),
+                "low": float(row.Low),
+                "close": float(row.Close)
             })
 
         return result
@@ -119,7 +125,7 @@ def intraday(symbol: str):
 
         df = data.dropna()
 
-        if len(df) < 20:
+        if len(df) < 30:
             return {"error": "Not enough intraday data"}
 
         close = df["Close"]
@@ -127,135 +133,100 @@ def intraday(symbol: str):
         low = df["Low"]
         volume = df["Volume"]
 
-# Handle multi-column case (like AAPL in certain responses)
         if hasattr(close, "columns"):
             close = close.iloc[:, 0]
             high = high.iloc[:, 0]
             low = low.iloc[:, 0]
             volume = volume.iloc[:, 0]
 
-        close = close.values
-        high = high.values
-        low = low.values
-        volume = volume.values
+        df = pd.DataFrame({
+            "Close": close,
+            "High": high,
+            "Low": low,
+            "Volume": volume
+        })
 
+        # Feature engineering (same as training)
+        df["return_1"] = df["Close"].pct_change(1)
+        df["return_3"] = df["Close"].pct_change(3)
+        df["return_5"] = df["Close"].pct_change(5)
 
-        current_price = close[-1]
-
-        # -----------------------
-        # EMA 20 & EMA 50
-        # -----------------------
-        def ema(prices, period):
-            alpha = 2 / (period + 1)
-            ema_val = prices[0]
-            for price in prices[1:]:
-                ema_val = alpha * price + (1 - alpha) * ema_val
-            return ema_val
-
-
-        ema20 = ema(close, min(20, len(close)))
-        ema50 = ema(close, min(50, len(close)))
-
-        # -----------------------
-        # RSI (14)
-        # -----------------------
-        delta = np.diff(close)
-        gain = np.maximum(delta, 0)
-        loss = np.abs(np.minimum(delta, 0))
-
-        avg_gain = np.mean(gain[-14:])
-        avg_loss = np.mean(loss[-14:]) + 1e-6
-
-        rs = avg_gain / avg_loss
-        rsi = 100 - (100 / (1 + rs))
-
-        # -----------------------
-        # MACD
-        # -----------------------
-        def ema_series(prices, period):
-            alpha = 2 / (period + 1)
-            ema_vals = [prices[0]]
-            for price in prices[1:]:
-                ema_vals.append(alpha * price + (1 - alpha) * ema_vals[-1])
-            return np.array(ema_vals)
-
-        ema12 = ema_series(close, 12)
-        ema26 = ema_series(close, 26)
-        macd_line = ema12 - ema26
-        signal_line = ema_series(macd_line, 9)
-
-        macd = macd_line[-1]
-        macd_signal = signal_line[-1]
-
-        # -----------------------
-        # VWAP
-        # -----------------------
-        typical_price = (high + low + close) / 3
-        vwap = np.sum(typical_price * volume) / np.sum(volume)
-
-        # -----------------------
-        # ATR (14)
-        # -----------------------
-        tr = np.maximum(
-            high[1:] - low[1:],
-            np.maximum(
-                abs(high[1:] - close[:-1]),
-                abs(low[1:] - close[:-1])
-            )
-        )
-        atr = np.mean(tr[-14:])
-
-        # -----------------------
-        # Signal scoring
-        # -----------------------
-        score = 0
-        total = 5
-
-        # EMA trend
-        score += 1 if ema20 > ema50 else -1
+        df["ema_9"] = df["Close"].ewm(span=9).mean()
+        df["ema_21"] = df["Close"].ewm(span=21).mean()
 
         # RSI
-        if rsi < 35:
-            score += 1
-        elif rsi > 65:
-            score -= 1
+        delta = df["Close"].diff()
+        gain = delta.clip(lower=0)
+        loss = -delta.clip(upper=0)
+        avg_gain = gain.rolling(14).mean()
+        avg_loss = loss.rolling(14).mean() + 1e-6
+        rs = avg_gain / avg_loss
+        df["rsi"] = 100 - (100 / (1 + rs))
 
         # MACD
-        score += 1 if macd > macd_signal else -1
+        ema12 = df["Close"].ewm(span=12).mean()
+        ema26 = df["Close"].ewm(span=26).mean()
+        df["macd"] = ema12 - ema26
 
-        # VWAP
-        score += 1 if current_price > vwap else -1
+        # ATR
+        high_low = df["High"] - df["Low"]
+        high_close = (df["High"] - df["Close"].shift()).abs()
+        low_close = (df["Low"] - df["Close"].shift()).abs()
+        tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        df["atr"] = tr.rolling(14).mean()
 
-        # Price vs EMA20
-        score += 1 if current_price > ema20 else -1
+        df = df.dropna()
 
-        # -----------------------
-        # Final signal
-        # -----------------------
-        signal = "BUY" if score > 0 else "SELL"
+        latest = df.iloc[-1]
 
-        confidence = int(50 + (abs(score) / total) * 50)
-        confidence = min(95, max(35, confidence))
+        features = [
+            "Close",
+            "Volume",
+            "return_1",
+            "return_3",
+            "return_5",
+            "ema_9",
+            "ema_21",
+            "rsi",
+            "macd",
+            "atr"
+        ]
 
-        # -----------------------
-        # ATR-based targets
-        # -----------------------
-        if signal == "BUY":
-            target = current_price + atr * 1.5
-            stop = current_price - atr
+        X = pd.DataFrame([latest[features]])
+
+        # Predict probabilities
+        probs = model.predict_proba(X)[0]
+        classes = model.classes_
+
+        prob_map = dict(zip(classes, probs))
+
+        buy_prob = prob_map.get(1, 0)
+        sell_prob = prob_map.get(-1, 0)
+
+        if buy_prob > sell_prob:
+            signal = "BUY"
+            confidence = buy_prob
         else:
-            target = current_price - atr * 1.5
-            stop = current_price + atr
+            signal = "SELL"
+            confidence = sell_prob
+
+        entry = float(latest["Close"])
+        atr = float(latest["atr"])
+
+        if signal == "BUY":
+            target = entry + atr * 1.5
+            stop = entry - atr
+        else:
+            target = entry - atr * 1.5
+            stop = entry + atr
 
         return {
             "symbol": symbol,
-            "price": round(float(current_price), 2),
+            "entry": round(entry, 2),
             "signal": signal,
-            "confidence": confidence,
-            "target": round(float(target), 2),
-            "stop": round(float(stop), 2),
-            "rsi": round(float(rsi), 2),
-            "atr": round(float(atr), 2)
+            "confidence": round(confidence * 100, 1),
+            "target": round(target, 2),
+            "stop": round(stop, 2)
         }
 
     except Exception as e:

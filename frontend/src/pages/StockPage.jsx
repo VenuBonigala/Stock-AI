@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import PriceChart from "../components/PriceChart";
 
 function StockPage() {
+  const [chartType, setChartType] = useState("line");
   const [intradayInterval, setIntradayInterval] = useState("5m");
   const [chartRange, setChartRange] = useState("6mo");
   const [predictionRange, setPredictionRange] = useState("6mo");
@@ -19,58 +20,93 @@ function StockPage() {
   const [activeTrade, setActiveTrade] = useState(null);
   const [tradeHistory, setTradeHistory] = useState([]);
   const [viewMode, setViewMode] = useState("new"); // new | active
+  const [marketStatus, setMarketStatus] = useState("Unknown");
+
+  function getMarketStatus(symbol) {
+    const now = new Date();
+    const hours = now.getHours();
+    const minutes = now.getMinutes();
+    const time = hours + minutes / 60;
+
+    // India
+    if (symbol.endsWith(".NS") || symbol === "NIFTY50" || symbol === "SENSEX") {
+      return time >= 9.25 && time <= 15.5 ? "Open" : "Closed";
+    }
+
+    // UK / EU
+    if (
+      symbol.endsWith(".L") ||
+      symbol.endsWith(".DE") ||
+      symbol.endsWith(".PA")
+    ) {
+      return time >= 13.5 && time <= 22 ? "Open" : "Closed";
+    }
+
+    // US default
+    return (time >= 19 && time <= 24) || time <= 1.5 ? "Open" : "Closed";
+  }
+
+  useEffect(() => {
+    setMarketStatus(getMarketStatus(symbol));
+  }, [symbol]);
+
 
   useEffect(() => {
     let intervalId;
+    let ignore = false;
 
     const fetchData = async () => {
       try {
         if (isIntraday) {
           const res = await fetch(
-            `http://localhost:8081/api/stocks/intraday/${symbol}`
+            `http://localhost:8081/api/stocks/intraday/${symbol}`,
           );
           const data = await res.json();
 
-          if (!data || data.error || data.price === undefined) {
-            throw new Error(data?.error || "Invalid intraday data");
+          if (!ignore) {
+            if (!data || data.error || data.entry === undefined) {
+              throw new Error(data?.error || "Invalid intraday data");
+            }
+            setPrediction(data);
           }
 
-          setPrediction(data);
-
           const histRes = await fetch(
-            `http://localhost:8081/api/stocks/history/${symbol}?period=1d&interval=${intradayInterval}`
+            `http://localhost:8081/api/stocks/history/${symbol}?period=1d&interval=${intradayInterval}`,
           );
           const histData = await histRes.json();
-          setHistory(histData);
+
+          if (!ignore) setHistory(histData);
         } else {
           const predRes = await fetch(
-            `http://localhost:8081/api/stocks/predict/${symbol}?period=${predictionRange}`
+            `http://localhost:8081/api/stocks/predict/${symbol}?period=${predictionRange}`,
           );
           const predData = await predRes.json();
 
-          if (
-            !predData ||
-            predData.current_price === undefined ||
-            predData.predicted_price === undefined
-          ) {
-            throw new Error("Invalid prediction data");
+          if (!ignore) {
+            if (
+              !predData ||
+              predData.current_price === undefined ||
+              predData.predicted_price === undefined
+            ) {
+              throw new Error("Invalid prediction data");
+            }
+            setPrediction(predData);
           }
 
-          setPrediction(predData);
-
           const histRes = await fetch(
-            `http://localhost:8081/api/stocks/history/${symbol}?period=${chartRange}&interval=1d`
+            `http://localhost:8081/api/stocks/history/${symbol}?period=${chartRange}&interval=1d`,
           );
           const histData = await histRes.json();
-          setHistory(histData);
+
+          if (!ignore) setHistory(histData);
         }
 
-        setError("");
+        if (!ignore) setError("");
       } catch (err) {
         console.error("Error:", err);
-        setError("Unable to load stock data");
+        if (!ignore) setError("Unable to load stock data");
       } finally {
-        setLoading(false);
+        if (!ignore) setLoading(false);
       }
     };
 
@@ -81,15 +117,16 @@ function StockPage() {
     }
 
     return () => {
+      ignore = true;
       if (intervalId) clearInterval(intervalId);
     };
   }, [symbol, chartRange, predictionRange, isIntraday, intradayInterval]);
 
 
   useEffect(() => {
-    if (!activeTrade || !prediction?.price) return;
+    if (!activeTrade || !prediction?.entry) return;
 
-    const currentPrice = prediction.price;
+    const currentPrice = prediction.entry;
     const entry = Number(activeTrade.entry);
     const target = Number(activeTrade.target);
     const stop = Number(activeTrade.stop);
@@ -148,7 +185,7 @@ function StockPage() {
   if (error) return <div className="p-10 text-red-500">{error}</div>;
 
   // --- trade calculations ---
-  let entry = prediction?.price || 0;
+  let entry = prediction?.entry || 0;
 
   const newTrade = {
     entry: entry.toFixed(2),
@@ -168,6 +205,15 @@ function StockPage() {
         Stock: {prediction.symbol}
         <span className="ml-4 text-sm px-3 py-1 rounded bg-slate-800 text-gray-300">
           {isIntraday ? "Intraday Mode" : "Long-term Mode"}
+        </span>
+        <span
+          className={`ml-3 text-sm px-3 py-1 rounded ${
+            marketStatus === "Open"
+              ? "bg-green-700 text-white"
+              : "bg-red-700 text-white"
+          }`}
+        >
+          Market {marketStatus}
         </span>
       </h1>
 
@@ -219,35 +265,48 @@ function StockPage() {
       </div>
 
       {isIntraday && (
-        <div className="mb-4">
-          <label className="text-gray-400 mr-2">Interval:</label>
-          <select
-            value={intradayInterval}
-            onChange={(e) => setIntradayInterval(e.target.value)}
-            className="bg-slate-800 text-white px-2 py-1 rounded"
-          >
-            <option value="1m">1m</option>
-            <option value="5m">5m</option>
-            <option value="15m">15m</option>
-          </select>
+        <div className="mb-4 flex gap-4 items-center">
+          <div>
+            <label className="text-gray-400 mr-2">Interval:</label>
+            <select
+              value={intradayInterval}
+              onChange={(e) => setIntradayInterval(e.target.value)}
+              className="bg-slate-800 text-white px-2 py-1 rounded"
+            >
+              <option value="1m">1m</option>
+              <option value="5m">5m</option>
+              <option value="15m">15m</option>
+            </select>
+          </div>
+
+          <div>
+            <label className="text-gray-400 mr-2">Chart:</label>
+            <select
+              value={chartType}
+              onChange={(e) => setChartType(e.target.value)}
+              className="bg-slate-800 text-white px-2 py-1 rounded"
+            >
+              <option value="line">Line</option>
+              <option value="candle">Candlestick</option>
+            </select>
+          </div>
         </div>
       )}
 
       <div className="grid grid-cols-4 gap-6 items-start">
         <div className="col-span-3">
-          <PriceChart data={history} />
+          <PriceChart data={history} type={chartType} />
         </div>
 
         {/* right panel */}
         <div className="bg-slate-900 shadow-lg rounded-xl p-6 border border-slate-800 space-y-6">
           {isIntraday ? (
             <>
-              {/* toggle */}
-              <div className="relative flex items-center border border-slate-600 rounded-2xl p-1 h-12 w-full bg-slate-900">
+              <div className="relative flex items-center border border-slate-600 rounded-2xl p-1 h-12 w-full bg-slate-900 overflow-hidden">
                 {/* Sliding background */}
                 <div
-                  className={`absolute top-1 bottom-1 w-1/2 rounded-xl bg-green-500 transition-all duration-300 ${
-                    viewMode === "active" ? "left-1" : "left-1/2"
+                  className={`absolute top-1 bottom-1 left-1 w-[calc(50%-4px)] rounded-xl bg-green-500 transition-transform duration-300 ease-in-out ${
+                    viewMode === "active" ? "translate-x-0" : "translate-x-full"
                   }`}
                 />
 
